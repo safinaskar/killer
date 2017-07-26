@@ -1,0 +1,67 @@
+#!/bin/bash
+
+# Зависит от понимания sed'ом \n
+
+NEW_LINE="
+"
+
+[ $# = 0 ] && set - -eo pid,ppid,%cpu,%mem,tname,etime,lstart,args --sort=etime
+
+[ "$1" = "--help" ] && echo "Usage: ${0##*/} [PS-ARGS]" && exit 0
+
+if ! type whiptail > /dev/null 2>&1; then
+	echo "${0##*/}: no whiptail" >&2
+	exit 1
+fi
+
+if ! type ps > /dev/null 2>&1; then
+	echo "${0##*/}: no ps" >&2
+	exit 1
+fi
+
+if ! type kill > /dev/null 2>&1; then
+	echo "${0##*/}: no kill" >&2
+	exit 1
+fi
+
+while :; do
+	ps "$@" | grep -v ']$' > /tmp/killer
+
+	# Трюк с fd 3 реально нужен. Т. к. если не тот TERM, dialog начинает писать сообщения об ошибках в stderr и PID получается битым
+	OUT="$(IFS="$NEW_LINE"; whiptail --output-fd 3 --noitem --nocancel --menu "   $(head -n 1 /tmp/killer)" 0 0 0 "Update (including screen size)" NULL Exit NULL $(tail -n +2 /tmp/killer | sed 's/$/\nNULL/') 3>&1 > /dev/tty 2>&1 || echo RET-$?)" # " # - for mc
+
+	rm /tmp/killer
+
+	read -r PID ETC <<< "$OUT"
+
+	case "$PID" in
+		Update)             continue;;
+		RET-1|RET-255|Exit) break;; # RET-1 is "Cancel", RET-255 is ESC
+
+		"")                echo "Empty string" >&2; exit 1;;
+		RET*)              echo "Wrong RET: $PID" >&2; exit 1;;
+	esac
+
+	printf 'Killing %s... ' "$PID"
+
+	if ! kill "$PID" 2> /dev/null; then
+		echo "already disappeared or you have no rights"
+		sleep 1
+		continue
+	fi
+
+	for((I = 0; I != 100; ++I)){
+		kill -0 "$PID" 2> /dev/null || break
+		sleep 0.1
+	}
+
+	kill -KILL "$PID" 2> /dev/null || :
+
+	# Может зависнуть, если зомби
+	while :; do
+		kill -0 "$PID" 2> /dev/null || break
+		sleep 0.1
+	done
+
+	printf 'OK\n'
+done
